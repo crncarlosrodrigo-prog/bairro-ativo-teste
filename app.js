@@ -12,7 +12,7 @@ const CAT_SAIDA = ['Luz', 'Água', 'Material', 'Outra saída'];
 
 /* ================= armazenamento ================= */
 const Banco = (() => {
-  const NOME = 'bairro-ativo', LOJA = 'estado', CHAVE = 'principal', LS = 'bairro-ativo-estado';
+  const NOME = 'bairro-ativo-teste2', LOJA = 'estado', CHAVE = 'principal', LS = 'bairro-ativo-teste2-estado';
   let dbp = null;
   function abrir() {
     if (dbp) return dbp;
