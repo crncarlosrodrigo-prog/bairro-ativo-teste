@@ -12,7 +12,7 @@ const CAT_SAIDA = ['Luz', 'Água', 'Material', 'Outra saída'];
 
 /* ================= armazenamento ================= */
 const Banco = (() => {
-  const NOME = 'bairro-ativo-teste', LOJA = 'estado', CHAVE = 'principal', LS = 'bairro-ativo-teste-estado';
+  const NOME = 'bairro-ativo', LOJA = 'estado', CHAVE = 'principal', LS = 'bairro-ativo-estado';
   let dbp = null;
   function abrir() {
     if (dbp) return dbp;
@@ -53,7 +53,8 @@ const Banco = (() => {
 
 function estadoVazio() {
   return { versao: VERSAO_DADOS, config: { associacao: ASSOC_PADRAO, ultimoBackup: null },
-    cursos: [], turmas: [], alunos: [], matriculas: [], eventos: [], lancamentos: [] };
+    cursos: [], turmas: [], alunos: [], matriculas: [], eventos: [], lancamentos: [],
+    atividades: [], participacoes: [], encontros: [] };
 }
 let E = estadoVazio();
 
@@ -65,7 +66,7 @@ async function salvar() {
 }
 
 /* ================= sincronização (Firebase) ================= */
-const COLECOES = ['cursos', 'turmas', 'alunos', 'matriculas', 'eventos', 'lancamentos'];
+const COLECOES = ['cursos', 'turmas', 'alunos', 'matriculas', 'eventos', 'lancamentos', 'atividades', 'participacoes', 'encontros'];
 const Nuvem = {
   cfg: window.BAIRRO_ATIVO_FIREBASE || null,
   ativa: false, user: null, db: null, base: {}, prontos: new Set(), escutas: [],
@@ -259,6 +260,12 @@ function matricular(turmaId, alunoId) {
 function limparMatriculasRepetidas() {
   const vistas = new Set();
   E.matriculas = E.matriculas.filter(m => { const k = m.turmaId + '|' + m.alunoId; if (vistas.has(k)) return false; vistas.add(k); return true; });
+  const vp = new Set();
+  E.participacoes = (E.participacoes || []).filter(x => { const k = x.atividadeId + '|' + x.alunoId; if (vp.has(k)) return false; vp.add(k); return true; });
+}
+function participar(atividadeId, alunoId) {
+  if (E.participacoes.some(x => x.atividadeId === atividadeId && x.alunoId === alunoId)) return false;
+  E.participacoes.push({ id: uid(), atividadeId, alunoId, data: hoje() }); return true;
 }
 function lerValor(txt) {
   const t = String(txt || '').trim().replace(/[R$\s]/g, '');
@@ -275,6 +282,12 @@ const evento = id => E.eventos.find(e => e.id === id);
 const turmasDoCurso = cid => E.turmas.filter(t => t.cursoId === cid).sort((a, b) => (b.inicio || '').localeCompare(a.inicio || ''));
 const alunosDaTurma = tid => [...new Set(E.matriculas.filter(m => m.turmaId === tid).map(m => m.alunoId))].map(aluno).filter(Boolean).sort(ordenarNome);
 const turmasDoAluno = aid => [...new Set(E.matriculas.filter(m => m.alunoId === aid).map(m => m.turmaId))].map(turma).filter(Boolean);
+const atividade = id => E.atividades.find(a => a.id === id);
+const pessoasDaAtividade = aid => [...new Set(E.participacoes.filter(x => x.atividadeId === aid).map(x => x.alunoId))].map(aluno).filter(Boolean).sort(ordenarNome);
+const atividadesDoAluno = alid => [...new Set(E.participacoes.filter(x => x.alunoId === alid).map(x => x.atividadeId))].map(atividade).filter(Boolean);
+const encontrosDe = aid => E.encontros.filter(x => x.atividadeId === aid).sort((a, b) => b.data.localeCompare(a.data));
+const presencas = lista => lista.reduce((s, x) => s + (Number(x.quantidade) || 0), 0);
+const ativaAtiv = a => a.situacao !== 'encerrada';
 const participantes = ev => ev.modo === 'lista' ? (ev.nomes || []).length : (Number(ev.quantidade) || 0);
 function situacaoTurma(t) {
   const h = hoje();
@@ -441,6 +454,7 @@ rota('inicio', () => {
   const evAno = E.eventos.filter(e => anoDe(e.data) === ano);
   const partAno = evAno.reduce((s, e) => s + participantes(e), 0);
   const tm = totaisMes(ym);
+  const ativsOn = E.atividades.filter(ativaAtiv), presAno = presencas(E.encontros.filter(x => anoDe(x.data) === ano));
   const semBackup = !Nuvem.ativa && (E.config.ultimoBackup ? (Date.now() - new Date(E.config.ultimoBackup)) / 864e5 > 30 : (E.alunos.length + E.eventos.length + E.lancamentos.length) > 0);
   return {
     titulo: 'Bairro Ativo', aba: 'inicio',
@@ -450,6 +464,8 @@ rota('inicio', () => {
         <a class="bloco gold" href="#/alunos" style="text-decoration:none"><div class="v">${E.alunos.length}</div><div class="l">alunos cadastrados</div></a>
         <a class="bloco coral" href="#/eventos" style="text-decoration:none"><div class="v">${evAno.length}</div><div class="l">eventos em ${ano}</div></a>
         <a class="bloco" href="#/eventos" style="text-decoration:none"><div class="v">${partAno}</div><div class="l">participações em ${ano}</div></a>
+        <a class="bloco" href="#/atividades" style="text-decoration:none"><div class="v">${ativsOn.length}</div><div class="l">atividades em andamento</div></a>
+        <a class="bloco gold" href="#/atividades" style="text-decoration:none"><div class="v">${presAno}</div><div class="l">presenças em atividades em ${ano}</div></a>
         <a class="bloco largo ${tm.saldo < 0 ? 'coral' : ''}" href="#/caixa" style="text-decoration:none"><div class="v">${reais(tm.saldo)}</div><div class="l">saldo de ${nomeMes(ym)}</div></a>
       </div>
       <p class="secao">Lançar agora</p>
@@ -457,6 +473,7 @@ rota('inicio', () => {
         <button class="btn" id="qAluno">+ Aluno</button>
         <button class="btn" id="qEvento">+ Evento</button>
       </div>
+      ${ativsOn.length ? `<button class="btn mt" id="qEncontro">+ Encontro de atividade</button>` : ''}
       <div class="btn-linha mt">
         <button class="btn sec" id="qEntrada">+ Entrada</button>
         <button class="btn sec" id="qSaida">+ Saída</button>
@@ -466,6 +483,7 @@ rota('inicio', () => {
     depois: () => {
       $('#qAluno').onclick = () => formAluno(null, null);
       $('#qEvento').onclick = () => formEvento(null);
+      const qe = $('#qEncontro'); if (qe) qe.onclick = () => escolherAtividadeEncontro();
       $('#qEntrada').onclick = () => formLancamento(null, 'entrada');
       $('#qSaida').onclick = () => formLancamento(null, 'saida');
     }
@@ -611,13 +629,22 @@ function caixaAtividades(alunoId, turmaId, cursoFoco) {
   if (turmaId) atuais.add(turmaId);
   const lista = E.turmas.filter(t => situacaoTurma(t).txt !== 'Encerrada' || atuais.has(t.id))
     .sort((x, y) => (curso(x.cursoId)?.nome || '').localeCompare(curso(y.cursoId)?.nome || '', 'pt-BR') || x.nome.localeCompare(y.nome, 'pt-BR'));
-  if (!lista.length) return `<div class="campo"><label>Atividades</label><p class="ajuda" style="margin:0">Nenhuma turma aberta. O aluno pode ser cadastrado agora e matriculado depois.</p></div>`;
+  if (!lista.length) return `<div class="campo"><label>Cursos e turmas</label><p class="ajuda" style="margin:0">Nenhuma turma aberta. O aluno pode ser cadastrado agora e matriculado depois.</p></div>`;
   const marcadoInicial = t => atuais.has(t.id) || (cursoFoco && t.cursoId === cursoFoco && lista.filter(x => x.cursoId === cursoFoco).length === 1);
-  return `<div class="campo"><label>Atividades <small>(marque uma, várias ou nenhuma)</small></label>
+  return `<div class="campo"><label>Cursos e turmas <small>(marque um, vários ou nenhum)</small></label>
     <div class="checks atividades">${lista.map(t => { const s = situacaoTurma(t); return `<label><input type="checkbox" name="atividade" value="${t.id}" ${marcadoInicial(t) ? 'checked' : ''}> <span><b>${esc(curso(t.cursoId)?.nome || 'Curso')}</b> – ${esc(t.nome)}${s.txt !== 'Em andamento' ? ` <small>(${s.txt.toLowerCase()})</small>` : ''}</span></label>`; }).join('')}</div></div>`;
 }
 
-function formAluno(id, turmaId, cursoFoco) {
+function caixaAtivs(alunoId, atividadeId) {
+  const atuais = new Set(alunoId ? atividadesDoAluno(alunoId).map(a => a.id) : []);
+  if (atividadeId) atuais.add(atividadeId);
+  const lista = E.atividades.filter(a => ativaAtiv(a) || atuais.has(a.id)).sort((x, y) => x.nome.localeCompare(y.nome, 'pt-BR'));
+  if (!lista.length) return '';
+  return `<div class="campo"><label>Atividades <small>(grupos, atividade física, atendimentos…)</small></label>
+    <div class="checks atividades">${lista.map(a => `<label><input type="checkbox" name="ativ" value="${a.id}" ${atuais.has(a.id) ? 'checked' : ''}> <span><b>${esc(a.nome)}</b>${a.tipo ? ` <small>· ${esc(a.tipo)}</small>` : ''}</span></label>`).join('')}</div></div>`;
+}
+
+function formAluno(id, turmaId, cursoFoco, atividadeId) {
   const a = id ? aluno(id) : null;
   let confirmouHomonimo = false;
   abrirModal(`<h2>${a ? 'Editar aluno' : 'Novo aluno'}</h2><form id="f" novalidate>
@@ -627,6 +654,7 @@ function formAluno(id, turmaId, cursoFoco) {
     ${campo('bairro', 'Bairro', a?.bairro ?? 'Boqueirão', 'text')}
     ${campo('cpf', 'CPF <small>(opcional)</small>', formatarCPF(a?.cpf), 'text', 'inputmode="numeric" placeholder="000.000.000-00" autocomplete="off"')}
     ${caixaAtividades(id, turmaId, cursoFoco)}
+    ${caixaAtivs(id, atividadeId)}
     <div id="homonimo" class="card" hidden style="border-color:var(--gold);background:var(--gold-soft);margin-bottom:14px"></div>
     <p class="ajuda" style="margin:0 0 14px">O CPF aparece escondido nas listas e relatórios. Guarde só se a associação precisar dele.</p>
     <div class="btn-linha"><button type="button" class="btn sec" data-fechar>Cancelar</button><button class="btn">Salvar</button></div></form>`,
@@ -639,13 +667,18 @@ function formAluno(id, turmaId, cursoFoco) {
     const ajustarMatriculas = (alunoId, novas, removerDesmarcadas) => {
       const visiveis = new Set([...f.querySelectorAll('[name=atividade]')].map(i => i.value));
       if (removerDesmarcadas) E.matriculas = E.matriculas.filter(mt => !(mt.alunoId === alunoId && visiveis.has(mt.turmaId) && !novas.includes(mt.turmaId)));
-      return novas.filter(t => matricular(t, alunoId)).length;
+      let n = novas.filter(t => matricular(t, alunoId)).length;
+      const ativs = [...f.querySelectorAll('[name=ativ]:checked')].map(i => i.value);
+      const ativVis = new Set([...f.querySelectorAll('[name=ativ]')].map(i => i.value));
+      if (removerDesmarcadas) E.participacoes = E.participacoes.filter(x => !(x.alunoId === alunoId && ativVis.has(x.atividadeId) && !ativs.includes(x.atividadeId)));
+      n += ativs.filter(aid => participar(aid, alunoId)).length;
+      return n;
     };
     const usarExistente = async (outro, d) => {
       const alvo = aluno(outro.id) || outro;
       ['telefone', 'endereco', 'cpf'].forEach(k => { if (!alvo[k] && d[k]) alvo[k] = d[k]; });
       const n = ajustarMatriculas(alvo.id, marcadas(), false);
-      await salvar(); fecharModal(); aviso(n ? 'Cadastro existente usado e matriculado' : 'Cadastro existente mantido'); render();
+      await salvar(); fecharModal(); aviso(n ? 'Cadastro existente usado e incluído' : 'Cadastro existente mantido'); render();
     };
     f.onsubmit = async ev => {
       ev.preventDefault(); limparErros(f);
@@ -657,8 +690,8 @@ function formAluno(id, turmaId, cursoFoco) {
       const outro = E.alunos.find(x => x.id !== id && normNome(x.nome) === normNome(d.nome));
       if (outro && !confirmouHomonimo) {
         const box = m.querySelector('#homonimo');
-        const nT = turmasDoAluno(outro.id).length;
-        box.innerHTML = `<b>Já existe "${esc(outro.nome)}" cadastrado(a)</b><p style="font-size:14px;margin:4px 0 10px">${esc(formatarFone(outro.telefone) || 'sem telefone')} · ${nT} turma(s). Se for a mesma pessoa, use o cadastro que já existe para não contar duas vezes.</p>
+        const nT = turmasDoAluno(outro.id).length + atividadesDoAluno(outro.id).length;
+        box.innerHTML = `<b>Já existe "${esc(outro.nome)}" cadastrado(a)</b><p style="font-size:14px;margin:4px 0 10px">${esc(formatarFone(outro.telefone) || 'sem telefone')} · ${nT} curso(s)/atividade(s). Se for a mesma pessoa, use o cadastro que já existe para não contar duas vezes.</p>
           ${a ? '' : `<button type="button" class="btn" id="usarExistente">Usar o cadastro existente</button>`}
           <button type="button" class="btn sec mt" id="outraPessoa">É outra pessoa, salvar mesmo assim</button>`;
         box.hidden = false; box.scrollIntoView({ block: 'center' });
@@ -670,7 +703,7 @@ function formAluno(id, turmaId, cursoFoco) {
       if (a) { alvo = aluno(id) || a; Object.assign(alvo, d); } else { alvo = { id: uid(), ...d, criadoEm: hoje() }; E.alunos.push(alvo); }
       const n = ajustarMatriculas(alvo.id, marcadas(), !!a);
       await salvar(); fecharModal();
-      aviso(a ? 'Aluno atualizado' : (n ? `Aluno cadastrado em ${n} atividade(s)` : 'Aluno cadastrado sem turma')); render();
+      aviso(a ? 'Cadastro atualizado' : (n ? `Cadastrado em ${n} curso(s)/atividade(s)` : 'Cadastrado sem curso nem atividade')); render();
     };
   });
 }
@@ -681,6 +714,8 @@ async function juntarAlunos(manterId, outros) {
   outros.forEach(o => {
     ['telefone', 'endereco', 'bairro', 'cpf'].forEach(k => { if (!alvo[k] && o[k]) alvo[k] = o[k]; });
     E.matriculas.forEach(mt => { if (mt.alunoId === o.id) mt.alunoId = manterId; });
+    E.participacoes.forEach(x => { if (x.alunoId === o.id) x.alunoId = manterId; });
+    E.encontros.forEach(x => { if (x.presentes) x.presentes = [...new Set(x.presentes.map(p => p === o.id ? manterId : p))]; });
     E.alunos = E.alunos.filter(x => x.id !== o.id);
   });
   await salvar(); aviso('Cadastros juntados'); render();
@@ -692,8 +727,8 @@ rota('alunos', () => {
     titulo: 'Alunos', aba: 'cursos',
     html: segmentoCursos('alunos') + (als.length
       ? `<input class="busca" id="busca" type="search" placeholder="Buscar pelo nome"><ul class="lista" id="lista">${als.map(a => {
-        const n = turmasDoAluno(a.id).length;
-        return `<li data-n="${esc(a.nome.toLowerCase())}"><a class="item" href="#/aluno/${a.id}"><div class="txt"><div class="n">${esc(a.nome)}</div><div class="d">${n} turma(s)${a.bairro ? ' · ' + esc(a.bairro) : ''}</div></div><span class="seta">›</span></a></li>`;
+        const n = turmasDoAluno(a.id).length, na = atividadesDoAluno(a.id).length;
+        return `<li data-n="${esc(a.nome.toLowerCase())}"><a class="item" href="#/aluno/${a.id}"><div class="txt"><div class="n">${esc(a.nome)}</div><div class="d">${n} turma(s)${na ? ` · ${na} atividade(s)` : ''}${a.bairro ? ' · ' + esc(a.bairro) : ''}</div></div><span class="seta">›</span></a></li>`;
       }).join('')}</ul>`
       : `<div class="vazio"><b>Nenhum aluno cadastrado</b>Cadastre aqui ou direto dentro de uma turma.</div>`) +
       `<div class="acoes"><button class="btn" id="novo">+ Novo aluno</button></div>`,
@@ -706,7 +741,7 @@ rota('alunos', () => {
 
 rota('aluno', id => {
   const a = aluno(id); if (!a) { ir('#/alunos'); return null; }
-  const ts = turmasDoAluno(id);
+  const ts = turmasDoAluno(id), avs = atividadesDoAluno(id);
   const iguais = E.alunos.filter(x => x.id !== id && normNome(x.nome) === normNome(a.nome));
   return {
     titulo: a.nome, subtitulo: 'Aluno', aba: 'cursos', voltar: '#/alunos',
@@ -718,7 +753,9 @@ rota('aluno', id => {
       <p class="secao">Turmas (${ts.length})</p>
       ${ts.length ? `<ul class="lista">${ts.map(t => `<li><a class="item" href="#/turma/${t.id}"><div class="txt"><div class="n">${esc(curso(t.cursoId)?.nome)}</div><div class="d">${esc(t.nome)} · ${dataBR(t.inicio)} a ${dataBR(t.fim)}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>`
         : `<div class="vazio">Ainda não está em nenhuma turma.</div>`}
-      <div class="acoes"><button class="btn" id="atividades">Atividades: incluir ou retirar</button>
+      ${E.atividades.length || avs.length ? `<p class="secao">Atividades (${avs.length})</p>
+      ${avs.length ? `<ul class="lista">${avs.map(x => `<li><a class="item" href="#/atividade/${x.id}"><div class="txt"><div class="n">${esc(x.nome)}</div><div class="d">${esc(x.tipo || 'Atividade')}${x.horario ? ' · ' + esc(x.horario) : ''}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>` : `<div class="vazio">Não participa de nenhuma atividade.</div>`}` : ''}
+      <div class="acoes"><button class="btn" id="atividades">Cursos e atividades: incluir ou retirar</button>
       <div class="btn-linha mt"><button class="btn sec" id="editar">Editar</button><button class="btn perigo" id="excluir">Excluir</button></div></div>`,
     depois: () => {
       const j = $('#juntar');
@@ -730,14 +767,185 @@ rota('aluno', id => {
       const v = $('#verCpf'); if (v) v.onclick = () => { const s = $('#cpf'); const aberto = v.textContent === 'esconder'; s.textContent = aberto ? mascararCPF(a.cpf) : formatarCPF(a.cpf); v.textContent = aberto ? 'mostrar' : 'esconder'; };
       $('#editar').onclick = () => formAluno(id, null);
       $('#excluir').onclick = async () => {
-        if (await confirmar('Excluir aluno?', `${a.nome} será apagado(a) e sairá de ${ts.length} turma(s).`)) {
+        if (await confirmar('Excluir aluno?', `${a.nome} será apagado(a) e sairá de ${ts.length} turma(s)${avs.length ? ` e ${avs.length} atividade(s)` : ''}.`)) {
           E.alunos = E.alunos.filter(x => x.id !== id); E.matriculas = E.matriculas.filter(m => m.alunoId !== id);
+          E.participacoes = E.participacoes.filter(x => x.alunoId !== id);
+          E.encontros.forEach(x => { if (x.presentes) x.presentes = x.presentes.filter(p => p !== id); });
           await salvar(); aviso('Aluno excluído'); ir('#/alunos');
         }
       };
     }
   };
 });
+
+/* ================= ATIVIDADES ================= */
+/* o que não é curso nem evento: grupos de convivência, atividade física, atendimentos...
+   cada atividade tem uma lista de participantes e o registro de cada encontro */
+const TIPOS_ATIV = ['Grupo de convivência', 'Atividade física', 'Atendimento/serviço'];
+let anoAtiv = new Date().getFullYear();
+rota('atividades', () => {
+  const ativs = [...E.atividades].sort((a, b) => (ativaAtiv(b) - ativaAtiv(a)) || a.nome.localeCompare(b.nome, 'pt-BR'));
+  const encAno = E.encontros.filter(x => anoDe(x.data) === anoAtiv);
+  const pessoas = new Set(E.participacoes.filter(x => ativaAtiv(atividade(x.atividadeId) || {})).map(x => x.alunoId)).size;
+  return {
+    titulo: 'Atividades', aba: 'atividades',
+    html: `<div class="periodo"><button id="ant" aria-label="Ano anterior">‹</button><b>${anoAtiv}</b><button id="prox" aria-label="Próximo ano">›</button></div>
+      <div class="blocos"><div class="bloco"><div class="v">${E.atividades.filter(ativaAtiv).length}</div><div class="l">atividades em andamento</div></div>
+      <div class="bloco gold"><div class="v">${pessoas}</div><div class="l">participantes</div></div>
+      <div class="bloco coral"><div class="v">${encAno.length}</div><div class="l">encontros em ${anoAtiv}</div></div>
+      <div class="bloco"><div class="v">${presencas(encAno)}</div><div class="l">presenças em ${anoAtiv}</div></div></div>
+      <p class="secao">Atividades</p>
+      ${ativs.length ? `<ul class="lista">${ativs.map(a => {
+        const n = pessoasDaAtividade(a.id).length, ne = encontrosDe(a.id).filter(x => anoDe(x.data) === anoAtiv).length;
+        return `<li><a class="item" href="#/atividade/${a.id}"><div class="txt"><div class="n">${esc(a.nome)}${ativaAtiv(a) ? '' : ' <span class="etiqueta">encerrada</span>'}</div><div class="d">${esc(a.tipo || 'Atividade')}${a.horario ? ' · ' + esc(a.horario) : ''} · ${n} participante(s)</div></div><span class="num">${ne}</span></a></li>`;
+      }).join('')}</ul><p class="ajuda" style="margin-top:-4px">O número à direita é a quantidade de encontros em ${anoAtiv}.</p>`
+        : `<div class="vazio"><b>Nenhuma atividade cadastrada</b>Cadastre aqui o que não é curso nem evento: grupo de convivência, ginástica, atendimentos...</div>`}
+      <div class="acoes"><button class="btn" id="novo">+ Nova atividade</button></div>`,
+    depois: () => {
+      $('#ant').onclick = () => { anoAtiv--; render(); };
+      $('#prox').onclick = () => { anoAtiv++; render(); };
+      $('#novo').onclick = () => formAtividade(null);
+    }
+  };
+});
+
+function formAtividade(id) {
+  const a = id ? atividade(id) : null;
+  const tipos = [...new Set([...TIPOS_ATIV, ...E.atividades.map(x => x.tipo).filter(Boolean)])];
+  abrirModal(`<h2>${a ? 'Editar atividade' : 'Nova atividade'}</h2><form id="f">
+    ${campo('nome', 'Nome da atividade', a?.nome, 'text', 'placeholder="Ex.: Ginástica da terceira idade" autocomplete="off"')}
+    ${campo('tipo', 'Tipo <small>(escolha uma sugestão ou escreva outro)</small>', a?.tipo, 'text', 'list="tiposAtiv" placeholder="Ex.: Atividade física" autocomplete="off"')}
+    <datalist id="tiposAtiv">${tipos.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
+    <div class="sugestoes">${tipos.map(t => `<button type="button" class="etiqueta" data-tipo="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+    ${campo('horario', 'Dias e horário <small>(opcional)</small>', a?.horario, 'text', 'placeholder="Ex.: Segundas e quartas, 8h"')}
+    ${campo('responsavel', 'Responsável <small>(opcional)</small>', a?.responsavel, 'text', 'placeholder="Quem conduz a atividade"')}
+    ${a ? `<div class="campo"><label>Situação</label><div class="opcoes">
+      <label><input type="radio" name="situacao" value="ativa" ${ativaAtiv(a) ? 'checked' : ''}><span>Em andamento</span></label>
+      <label><input type="radio" name="situacao" value="encerrada" ${ativaAtiv(a) ? '' : 'checked'}><span>Encerrada</span></label></div></div>` : ''}
+    <div class="campo"><label for="obs">Observação <small>(opcional)</small></label><textarea id="obs" name="obs" placeholder="Ex.: parceria com a Unidade de Saúde">${esc(a?.obs)}</textarea></div>
+    <div class="btn-linha"><button type="button" class="btn sec" data-fechar>Cancelar</button><button class="btn">Salvar</button></div></form>`,
+  m => {
+    const f = m.querySelector('#f');
+    m.querySelectorAll('[data-tipo]').forEach(b => b.onclick = () => { f.tipo.value = b.dataset.tipo; });
+    f.onsubmit = async ev => {
+      ev.preventDefault(); limparErros(f);
+      const d = { nome: f.nome.value.trim(), tipo: f.tipo.value.trim(), horario: f.horario.value.trim(), responsavel: f.responsavel.value.trim(), obs: f.obs.value.trim() };
+      if (!d.nome) return erroCampo(f, 'nome', 'Digite o nome da atividade.');
+      if (f.situacao) d.situacao = f.situacao.value;
+      let novoId = null;
+      if (a) Object.assign(atividade(id) || a, d); else { novoId = uid(); E.atividades.push({ id: novoId, ...d, situacao: 'ativa', criadoEm: hoje() }); }
+      await salvar(); fecharModal(); aviso(a ? 'Atividade atualizada' : 'Atividade cadastrada');
+      if (novoId) ir('#/atividade/' + novoId); else render();
+    };
+  });
+}
+
+rota('atividade', id => {
+  const a = atividade(id); if (!a) { ir('#/atividades'); return null; }
+  const pes = pessoasDaAtividade(id), encs = encontrosDe(id), encAno = encs.filter(x => anoDe(x.data) === anoAtiv);
+  return {
+    titulo: a.nome, subtitulo: 'Atividade', aba: 'atividades', voltar: '#/atividades',
+    html: `<div class="blocos"><div class="bloco gold"><div class="v">${pes.length}</div><div class="l">participantes</div></div>
+      <div class="bloco coral"><div class="v">${encAno.length}</div><div class="l">encontros em ${anoAtiv}</div></div>
+      <div class="bloco largo"><div class="v">${presencas(encAno)}</div><div class="l">presenças somadas em ${anoAtiv}${encAno.length ? ` · média de ${Math.round(presencas(encAno) / encAno.length)} por encontro` : ''}</div></div></div>
+      <div class="card mt"><dl class="info"><dt>Tipo</dt><dd>${esc(a.tipo || '—')}</dd><dt>Horário</dt><dd>${esc(a.horario || '—')}</dd>
+      <dt>Responsável</dt><dd>${esc(a.responsavel || '—')}</dd><dt>Situação</dt><dd>${ativaAtiv(a) ? 'Em andamento' : 'Encerrada'}</dd>
+      ${a.obs ? `<dt>Obs.</dt><dd>${esc(a.obs)}</dd>` : ''}</dl></div>
+
+      <p class="secao">Encontros (${encs.length})</p>
+      <button class="btn" id="novoEnc" style="margin-bottom:12px">+ Registrar encontro</button>
+      ${encs.length ? `<ul class="lista">${encs.slice(0, 30).map(x => `<li><button class="item" data-enc="${x.id}"><div class="txt"><div class="n">${dataBR(x.data)}</div><div class="d">${x.presentes?.length ? x.presentes.length + ' marcado(s) na lista' : 'só o número'}${x.obs ? ' · ' + esc(x.obs) : ''}</div></div><span class="num coral">${Number(x.quantidade) || 0}</span></button></li>`).join('')}</ul>${encs.length > 30 ? `<p class="ajuda">Mostrando os 30 encontros mais recentes. O relatório traz todos.</p>` : ''}`
+        : `<div class="vazio">Nenhum encontro registrado. A cada encontro, anote a data e quantas pessoas vieram.</div>`}
+
+      <p class="secao">Participantes (${pes.length})</p>
+      <div class="btn-linha" style="margin-bottom:12px"><button class="btn" id="pessoaNova">+ Cadastrar pessoa aqui</button><button class="btn sec" id="pessoaExist">Já cadastrada</button></div>
+      ${pes.length ? `<ul class="lista">${pes.map(p => `<li><a class="item" href="#/aluno/${p.id}"><div class="txt"><div class="n">${esc(p.nome)}</div><div class="d">${esc(formatarFone(p.telefone) || 'sem telefone')}${p.bairro ? ' · ' + esc(p.bairro) : ''}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>`
+        : `<div class="vazio">Ninguém na lista ainda. As pessoas são as mesmas do cadastro de alunos.</div>`}
+      <div class="acoes"><div class="btn-linha"><button class="btn sec" id="editar">Editar atividade</button><button class="btn perigo" id="excluir">Excluir</button></div></div>`,
+    depois: r => {
+      $('#novoEnc').onclick = () => formEncontro(id, null);
+      r.querySelectorAll('[data-enc]').forEach(b => b.onclick = () => formEncontro(id, b.dataset.enc));
+      $('#pessoaNova').onclick = () => formAluno(null, null, null, id);
+      $('#pessoaExist').onclick = () => escolherParticipantes(id);
+      $('#editar').onclick = () => formAtividade(id);
+      $('#excluir').onclick = async () => {
+        if (await confirmar('Excluir atividade?', `"${a.nome}" será apagada, com ${encs.length} encontro(s) registrado(s). As pessoas continuam cadastradas.`)) {
+          E.atividades = E.atividades.filter(x => x.id !== id);
+          E.participacoes = E.participacoes.filter(x => x.atividadeId !== id);
+          E.encontros = E.encontros.filter(x => x.atividadeId !== id);
+          await salvar(); aviso('Atividade excluída'); ir('#/atividades');
+        }
+      };
+    }
+  };
+});
+
+function escolherParticipantes(atividadeId) {
+  const ja = new Set(E.participacoes.filter(x => x.atividadeId === atividadeId).map(x => x.alunoId));
+  const livres = E.alunos.filter(a => !ja.has(a.id)).sort(ordenarNome);
+  if (!livres.length) return aviso('Todas as pessoas cadastradas já estão nesta atividade.');
+  abrirModal(`<h2>Incluir participantes</h2><p class="ajuda">Marque quem participa desta atividade.</p>
+    <input class="busca" id="busca" type="search" placeholder="Buscar pelo nome" data-sem-foco="1">
+    <div class="checks" id="checks">${livres.map(a => `<label data-n="${esc(normNome(a.nome))}"><input type="checkbox" value="${a.id}"> ${esc(a.nome)}</label>`).join('')}</div>
+    <div class="btn-linha mt"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="ok">Incluir</button></div>`,
+  m => {
+    m.querySelector('#busca').oninput = e => { const q = normNome(e.target.value); m.querySelectorAll('#checks label').forEach(l => l.hidden = !l.dataset.n.includes(q)); };
+    const ok = m.querySelector('#ok');
+    ok.onclick = async () => {
+      if (ok.disabled) return;
+      const ids = [...m.querySelectorAll('#checks input:checked')].map(i => i.value);
+      if (!ids.length) return aviso('Marque pelo menos uma pessoa.');
+      ok.disabled = true;
+      const n = ids.filter(alunoId => participar(atividadeId, alunoId)).length;
+      await salvar(); fecharModal(); aviso(`${n} participante(s) incluído(s)`); render();
+    };
+  });
+}
+
+function escolherAtividadeEncontro() {
+  const ativs = E.atividades.filter(ativaAtiv).sort((x, y) => x.nome.localeCompare(y.nome, 'pt-BR'));
+  if (ativs.length === 1) return formEncontro(ativs[0].id, null);
+  abrirModal(`<h2>Encontro de qual atividade?</h2><ul class="lista">${ativs.map(a => `<li><button class="item" data-a="${a.id}"><div class="txt"><div class="n">${esc(a.nome)}</div><div class="d">${esc(a.tipo || 'Atividade')}${a.horario ? ' · ' + esc(a.horario) : ''}</div></div><span class="seta">›</span></button></li>`).join('')}</ul>
+    <button class="btn sec mt" data-fechar>Cancelar</button>`,
+  m => m.querySelectorAll('[data-a]').forEach(b => b.onclick = () => formEncontro(b.dataset.a, null)));
+}
+
+/* encontro: data e quantas pessoas vieram; marcar os presentes na lista é opcional */
+function formEncontro(atividadeId, encId) {
+  const x = encId ? E.encontros.find(e => e.id === encId) : null;
+  const pes = pessoasDaAtividade(atividadeId);
+  const marcados = new Set(x?.presentes || []);
+  abrirModal(`<h2>${x ? 'Editar encontro' : 'Registrar encontro'}</h2><p class="ajuda">${esc(atividade(atividadeId)?.nome || '')}</p><form id="f">
+    <div class="duas">${campo('data', 'Data', x?.data ?? hoje(), 'date')}${campo('quantidade', 'Quantas pessoas vieram?', x ? (x.quantidade ?? '') : '', 'number', 'inputmode="numeric" min="0" step="1" placeholder="Ex.: 15"')}</div>
+    ${pes.length ? `<div class="campo"><label>Marcar quem veio <small>(opcional: o número acima é preenchido sozinho)</small></label>
+      <div class="checks atividades" id="presentes">${pes.map(p => `<label><input type="checkbox" name="presente" value="${p.id}" ${marcados.has(p.id) ? 'checked' : ''}> <span>${esc(p.nome)}</span></label>`).join('')}</div></div>` : ''}
+    <div class="campo"><label for="obs">Observação <small>(opcional)</small></label><textarea id="obs" name="obs" placeholder="Ex.: encontro com palestra">${esc(x?.obs)}</textarea></div>
+    <div class="btn-linha"><button type="button" class="btn sec" data-fechar>Cancelar</button><button class="btn">Salvar</button></div>
+    ${x ? `<button type="button" class="btn perigo mt" id="excluirEnc">Excluir encontro</button>` : ''}</form>`,
+  m => {
+    const f = m.querySelector('#f');
+    const checks = [...f.querySelectorAll('[name=presente]')];
+    let contaManual = !!x && (Number(x.quantidade) || 0) !== marcados.size;
+    f.quantidade.addEventListener('input', () => { contaManual = true; });
+    checks.forEach(c => c.onchange = () => { const n = checks.filter(k => k.checked).length; if (!contaManual || Number(f.quantidade.value || 0) < n) { f.quantidade.value = n; contaManual = false; } });
+    const ex = m.querySelector('#excluirEnc');
+    if (ex) ex.onclick = async () => {
+      if (await confirmar('Excluir encontro?', `O encontro de ${dataBR(x.data)} será apagado.`)) { E.encontros = E.encontros.filter(e => e.id !== encId); await salvar(); aviso('Encontro excluído'); render(); }
+    };
+    f.onsubmit = async ev => {
+      ev.preventDefault(); limparErros(f);
+      const presentes = checks.filter(k => k.checked).map(k => k.value);
+      const q = f.quantidade.value === '' ? presentes.length : Number(f.quantidade.value);
+      if (!f.data.value) return erroCampo(f, 'data', 'Informe a data.');
+      if (!Number.isInteger(q) || q < 0) return erroCampo(f, 'quantidade', 'Use um número inteiro, como 15.');
+      if (q < presentes.length) return erroCampo(f, 'quantidade', `Há ${presentes.length} pessoas marcadas: o número não pode ser menor.`);
+      const d = { atividadeId, data: f.data.value, quantidade: q, presentes, obs: f.obs.value.trim() };
+      if (x) Object.assign(E.encontros.find(e => e.id === encId) || x, d); else E.encontros.push({ id: uid(), ...d });
+      anoAtiv = anoDe(d.data);
+      await salvar(); fecharModal(); aviso(x ? 'Encontro atualizado' : `Encontro registrado: ${q} pessoa(s)`); render();
+    };
+  });
+}
 
 /* ================= EVENTOS ================= */
 let anoEventos = new Date().getFullYear();
@@ -920,8 +1128,9 @@ function formLancamento(id, tipoNovo, eventoNovo) {
 
 /* ================= RELATÓRIOS ================= */
 const TIPOS_REL = [
-  { id: 'geral', nome: 'Geral', desc: 'Cursos, eventos e caixa' },
+  { id: 'geral', nome: 'Geral', desc: 'Cursos, atividades, eventos e caixa' },
   { id: 'cursos', nome: 'Cursos', desc: 'Turmas e alunos' },
+  { id: 'atividades', nome: 'Atividades', desc: 'Participantes e encontros' },
   { id: 'eventos', nome: 'Eventos', desc: 'Participantes e arrecadação' },
   { id: 'caixa', nome: 'Caixa', desc: 'Todas as entradas e saídas' },
   { id: 'bazar', nome: 'Bazar', desc: 'Só o que entrou do bazar' }
@@ -950,16 +1159,23 @@ function dadosRel() {
   const sai = ls.filter(l => l.tipo === 'saida').reduce((s, l) => s + l.valor, 0);
   const bazar = ls.filter(l => l.tipo === 'entrada' && l.categoria === 'Bazar');
   const totBazar = bazar.reduce((s, l) => s + l.valor, 0), diasBazar = new Set(bazar.map(l => l.data)).size;
-  return { ts, porCurso, alunosUnicos, evs, part, ls, ent, sai, bazar, totBazar, diasBazar };
+  const encs = E.encontros.filter(x => relDentro(x.data)).sort((a, b) => a.data.localeCompare(b.data));
+  const porAtiv = E.atividades.map(a => {
+    const ea = encs.filter(x => x.atividadeId === a.id);
+    return { ativ: a, nome: a.nome, encontros: ea, presencas: presencas(ea), pessoas: pessoasDaAtividade(a.id) };
+  }).filter(x => x.encontros.length || ativaAtiv(x.ativ)).sort((a, b) => b.presencas - a.presencas || a.nome.localeCompare(b.nome, 'pt-BR'));
+  const pessoasAtiv = new Set(porAtiv.flatMap(x => x.pessoas.map(p => p.id))).size, presAtiv = presencas(encs);
+  return { ts, porCurso, alunosUnicos, evs, part, ls, ent, sai, bazar, totBazar, diasBazar, encs, porAtiv, pessoasAtiv, presAtiv };
 }
 function resumoRel(d) {
   const b = (v, l, c = '') => `<div class="bloco ${c}"><div class="v" style="font-size:${String(v).length > 7 ? 18 : 24}px">${v}</div><div class="l">${l}</div></div>`;
   switch (Rel.tipo) {
     case 'cursos': return b(d.porCurso.length, 'cursos') + b(d.ts.length, 'turmas') + b(d.alunosUnicos, 'alunos atendidos', 'gold');
+    case 'atividades': return b(d.porAtiv.length, 'atividades') + b(d.pessoasAtiv, 'participantes', 'gold') + b(d.encs.length, 'encontros', 'coral') + b(d.presAtiv, 'presenças');
     case 'eventos': return b(d.evs.length, 'eventos', 'coral') + b(d.part, 'participações') + b(reais(d.ls.filter(l => l.tipo === 'entrada' && l.eventoId).reduce((s, l) => s + l.valor, 0)), 'arrecadado em eventos', 'gold');
     case 'caixa': return b(reais(d.ent), 'entradas') + b(reais(d.sai), 'saídas', 'coral') + b(reais(d.ent - d.sai), 'saldo', 'gold') + b(d.ls.length, 'lançamentos');
     case 'bazar': return b(reais(d.totBazar), 'arrecadado no bazar', 'gold') + b(d.diasBazar, 'dias de bazar') + b(reais(d.diasBazar ? d.totBazar / d.diasBazar : 0), 'média por dia');
-    default: return b(d.porCurso.length, 'cursos') + b(d.alunosUnicos, 'alunos atendidos', 'gold') + b(d.evs.length, 'eventos', 'coral') + b(d.part, 'participações') + b(reais(d.ent - d.sai), 'saldo do caixa');
+    default: return b(d.porCurso.length, 'cursos') + b(d.alunosUnicos, 'alunos atendidos', 'gold') + b(d.porAtiv.length, 'atividades') + b(d.presAtiv, 'presenças em atividades', 'gold') + b(d.evs.length, 'eventos', 'coral') + b(d.part, 'participações em eventos') + b(reais(d.ent - d.sai), 'saldo do caixa');
   }
 }
 
@@ -1095,6 +1311,21 @@ function gerarPDF() {
       pdfTabela(p, ['Nº', 'Nome', 'Bairro'], al.map((a, i) => [i + 1, a.nome, a.bairro || '—']), [15, 115, 50], ['r', '', '']);
     }));
   };
+  const secAtividades = (detalhe) => {
+    pdfSecao(p, 'Atividades');
+    pdfTabela(p, ['Atividade', 'Tipo', 'Particip.', 'Encontros', 'Presenças'], d.porAtiv.map(x => [x.nome + (ativaAtiv(x.ativ) ? '' : ' (encerrada)'), x.ativ.tipo || '—', x.pessoas.length, x.encontros.length, x.presencas]), [62, 48, 22, 24, 24], ['', '', 'r', 'r', 'r']);
+    if (!detalhe) return;
+    d.porAtiv.forEach(x => {
+      if (x.encontros.length) {
+        pdfSecao(p, `Encontros – ${x.nome}`);
+        pdfTabela(p, ['Data', 'Pessoas', 'Observação'], x.encontros.map(e => [dataBR(e.data), Number(e.quantidade) || 0, e.obs || '—']), [30, 25, 125], ['', 'r', '']);
+      }
+      if (x.pessoas.length) {
+        pdfSecao(p, `Participantes – ${x.nome}`);
+        pdfTabela(p, ['Nº', 'Nome', 'Bairro'], x.pessoas.map((a, i) => [i + 1, a.nome, a.bairro || '—']), [15, 115, 50], ['r', '', '']);
+      }
+    });
+  };
   const secEventos = (comArrec) => {
     pdfSecao(p, 'Eventos');
     const arrec = id => d.ls.filter(l => l.tipo === 'entrada' && l.eventoId === id).reduce((s, l) => s + l.valor, 0);
@@ -1107,13 +1338,20 @@ function gerarPDF() {
   if (tipo.id === 'geral') {
     pdfSecao(p, 'Resumo');
     pdfBlocos(p, [{ v: d.porCurso.length, l: 'cursos' }, { v: d.ts.length, l: 'turmas' }, { v: d.alunosUnicos, l: 'alunos atendidos', cor: [253, 241, 214] }, { v: d.evs.length, l: 'eventos', cor: [253, 230, 224] }, { v: d.part, l: 'participações' }]);
-    secCursos(false); secEventos(false);
+    if (d.porAtiv.length) pdfBlocos(p, [{ v: d.porAtiv.length, l: 'atividades' }, { v: d.pessoasAtiv, l: 'participantes em atividades', cor: [253, 241, 214] }, { v: d.encs.length, l: 'encontros', cor: [253, 230, 224] }, { v: d.presAtiv, l: 'presenças em atividades' }]);
+    secCursos(false);
+    if (d.porAtiv.length) secAtividades(false);
+    secEventos(false);
     pdfSecao(p, 'Caixa');
     pdfTabela(p, ['Item', 'Valor'], [['Total de entradas', reais(d.ent)], ['Total de saídas', reais(d.sai)], ['Saldo do período', reais(d.ent - d.sai)], ['Arrecadado no bazar', reais(d.totBazar)]], [130, 50], ['', 'r']);
   } else if (tipo.id === 'cursos') {
     pdfSecao(p, 'Resumo');
     pdfBlocos(p, [{ v: d.porCurso.length, l: 'cursos' }, { v: d.ts.length, l: 'turmas' }, { v: d.alunosUnicos, l: 'alunos atendidos', cor: [253, 241, 214] }]);
     secCursos(true);
+  } else if (tipo.id === 'atividades') {
+    pdfSecao(p, 'Resumo');
+    pdfBlocos(p, [{ v: d.porAtiv.length, l: 'atividades' }, { v: d.pessoasAtiv, l: 'participantes', cor: [253, 241, 214] }, { v: d.encs.length, l: 'encontros', cor: [253, 230, 224] }, { v: d.presAtiv, l: 'presenças' }]);
+    secAtividades(true);
   } else if (tipo.id === 'eventos') {
     pdfSecao(p, 'Resumo');
     pdfBlocos(p, [{ v: d.evs.length, l: 'eventos', cor: [253, 230, 224] }, { v: d.part, l: 'participações' }]);
