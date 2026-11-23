@@ -288,7 +288,16 @@ const atividadesDoAluno = alid => [...new Set(E.participacoes.filter(x => x.alun
 const encontrosDe = aid => E.encontros.filter(x => x.atividadeId === aid).sort((a, b) => b.data.localeCompare(a.data));
 const presencas = lista => lista.reduce((s, x) => s + (Number(x.quantidade) || 0), 0);
 const ativaAtiv = a => a.situacao !== 'encerrada';
-const participantes = ev => ev.modo === 'lista' ? (ev.nomes || []).length : (Number(ev.quantidade) || 0);
+const participantes = ev => ev.modo === 'lista' ? (ev.nomes || []).length + (ev.pessoas || []).length : Math.max(Number(ev.quantidade) || 0, (ev.pessoas || []).length);
+const eventosDoAluno = alid => E.eventos.filter(e => (e.pessoas || []).includes(alid)).sort((a, b) => b.data.localeCompare(a.data));
+/* resumo do que a pessoa faz hoje: o cadastro fica sempre ativo, mesmo sem nada no momento */
+function resumoPessoa(a) {
+  const ts = turmasDoAluno(a.id).filter(t => situacaoTurma(t).txt !== 'Encerrada').length;
+  const av = atividadesDoAluno(a.id).filter(ativaAtiv).length;
+  const partes = [];
+  if (ts) partes.push(`${ts} curso(s)`); if (av) partes.push(`${av} atividade(s)`);
+  return (partes.length ? partes.join(' · ') : 'nada no momento') + (a.telefone ? ' · ' + formatarFone(a.telefone) : '');
+}
 function situacaoTurma(t) {
   const h = hoje();
   if (t.inicio && t.inicio > h) return { txt: 'Vai começar', cls: 'cinza' };
@@ -461,7 +470,7 @@ rota('inicio', () => {
     html: `
       <div class="blocos">
         <a class="bloco" href="#/cursos" style="text-decoration:none"><div class="v">${ativas.length}</div><div class="l">turmas em andamento</div></a>
-        <a class="bloco gold" href="#/alunos" style="text-decoration:none"><div class="v">${E.alunos.length}</div><div class="l">alunos cadastrados</div></a>
+        <a class="bloco gold" href="#/alunos" style="text-decoration:none"><div class="v">${E.alunos.length}</div><div class="l">pessoas cadastradas</div></a>
         <a class="bloco coral" href="#/eventos" style="text-decoration:none"><div class="v">${evAno.length}</div><div class="l">eventos em ${ano}</div></a>
         <a class="bloco" href="#/eventos" style="text-decoration:none"><div class="v">${partAno}</div><div class="l">participações em ${ano}</div></a>
         <a class="bloco" href="#/atividades" style="text-decoration:none"><div class="v">${ativsOn.length}</div><div class="l">atividades em andamento</div></a>
@@ -536,12 +545,19 @@ rota('curso', id => {
       <p class="secao">Turmas</p>
       ${ts.length ? `<ul class="lista">${ts.map(t => { const s = situacaoTurma(t); return `<li><a class="item" href="#/turma/${t.id}"><div class="txt"><div class="n">${esc(t.nome)}</div><div class="d">${dataBR(t.inicio)} a ${dataBR(t.fim)}${t.horario ? ' · ' + esc(t.horario) : ''}</div><span class="etiqueta ${s.cls}">${s.txt}</span></div><span class="num">${alunosDaTurma(t.id).length}</span></a></li>`; }).join('')}</ul>`
         : `<div class="vazio"><b>Nenhuma turma</b>Crie uma turma com a data de início e de fim.</div>`}
-      <div class="acoes">${ts.some(t => situacaoTurma(t).txt !== 'Encerrada') ? `<button class="btn" id="alunoCurso">+ Cadastrar aluno neste curso</button>` : ''}
+      <div class="acoes">${ts.some(t => situacaoTurma(t).txt !== 'Encerrada') ? `<div class="btn-linha"><button class="btn" id="exCurso">Incluir aluno já cadastrado</button><button class="btn sec" id="alunoCurso">+ Aluno novo</button></div>` : `<p class="ajuda">Para incluir alunos, crie uma turma com as datas do curso.</p>`}
       <button class="btn ${ts.some(t => situacaoTurma(t).txt !== 'Encerrada') ? 'sec mt' : ''}" id="novaTurma">+ Nova turma</button>
       <div class="btn-linha mt"><button class="btn sec" id="editar">Editar curso</button><button class="btn perigo" id="excluir">Excluir</button></div></div>`,
     depois: () => {
       const ac = $('#alunoCurso');
       if (ac) ac.onclick = () => { const abertas = ts.filter(t => situacaoTurma(t).txt !== 'Encerrada'); formAluno(null, abertas.length === 1 ? abertas[0].id : null, abertas.length === 1 ? null : id); };
+      const ex = $('#exCurso');
+      if (ex) ex.onclick = () => {
+        const abertas = ts.filter(t => situacaoTurma(t).txt !== 'Encerrada');
+        if (abertas.length === 1) return escolherAlunos(abertas[0].id);
+        abrirModal(`<h2>Em qual turma?</h2><ul class="lista">${abertas.map(t => `<li><button class="item" data-t="${t.id}"><div class="txt"><div class="n">${esc(t.nome)}</div><div class="d">${dataBR(t.inicio)} a ${dataBR(t.fim)}${t.horario ? ' · ' + esc(t.horario) : ''}</div></div><span class="seta">›</span></button></li>`).join('')}</ul><button class="btn sec mt" data-fechar>Cancelar</button>`,
+          m => m.querySelectorAll('[data-t]').forEach(b => b.onclick = () => escolherAlunos(b.dataset.t)));
+      };
       $('#novaTurma').onclick = () => formTurma(null, id);
       $('#editar').onclick = () => formCurso(id);
       $('#excluir').onclick = async () => {
@@ -569,8 +585,9 @@ function formTurma(id, cursoId) {
     if (!d.nome) return erroCampo(f, 'nome', 'Digite o nome da turma.');
     if (!d.inicio) return erroCampo(f, 'inicio', 'Informe a data de início.');
     if (d.fim && d.fim < d.inicio) return erroCampo(f, 'fim', 'O fim precisa ser depois do início.');
-    if (t) Object.assign(turma(id) || t, d); else E.turmas.push({ id: uid(), cursoId, ...d });
-    await salvar(); fecharModal(); aviso(t ? 'Turma atualizada' : 'Turma criada'); render();
+    let novaId = null;
+    if (t) Object.assign(turma(id) || t, d); else { novaId = uid(); E.turmas.push({ id: novaId, cursoId, ...d }); }
+    await salvar(); fecharModal(); aviso(t ? 'Turma atualizada' : 'Turma criada: agora inclua os alunos'); if (novaId) ir('#/turma/' + novaId); else render();
   });
 }
 
@@ -583,7 +600,7 @@ rota('turma', id => {
       ${t.horario ? `<dt>Horário</dt><dd>${esc(t.horario)}</dd>` : ''}${t.professor ? `<dt>Professor(a)</dt><dd>${esc(t.professor)}</dd>` : ''}
       <dt>Situação</dt><dd>${s.txt}</dd></dl></div>
       <p class="secao">Alunos matriculados (${als.length})</p>
-      <div class="btn-linha" style="margin-bottom:12px"><button class="btn" id="alunoNovo">+ Cadastrar aluno aqui</button><button class="btn sec" id="alunoExist">Já cadastrado</button></div>
+      <div class="btn-linha" style="margin-bottom:12px"><button class="btn" id="alunoExist">Incluir já cadastrado</button><button class="btn sec" id="alunoNovo">+ Aluno novo</button></div>
       ${als.length ? `<ul class="lista">${als.map(a => `<li><a class="item" href="#/aluno/${a.id}"><div class="txt"><div class="n">${esc(a.nome)}</div><div class="d">${esc(formatarFone(a.telefone) || 'sem telefone')}${a.bairro ? ' · ' + esc(a.bairro) : ''}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>`
         : `<div class="vazio"><b>Nenhum aluno nesta turma</b>Cadastre um aluno novo aqui mesmo ou escolha alguém que já está cadastrado.</div>`}
       <div class="acoes"><div class="btn-linha"><button class="btn sec" id="editar">Editar turma</button><button class="btn perigo" id="excluir">Excluir</button></div></div>`,
@@ -601,25 +618,44 @@ rota('turma', id => {
   };
 });
 
-function escolherAlunos(turmaId) {
-  const ja = new Set(E.matriculas.filter(m => m.turmaId === turmaId).map(m => m.alunoId));
-  const livres = E.alunos.filter(a => !ja.has(a.id)).sort(ordenarNome);
-  if (!livres.length) return aviso('Todos os alunos cadastrados já estão nesta turma.');
-  abrirModal(`<h2>Matricular alunos</h2><p class="ajuda">Marque quem vai participar desta turma.</p>
-    <input class="busca" id="busca" type="search" placeholder="Buscar pelo nome" data-sem-foco="1">
-    <div class="checks" id="checks">${livres.map(a => `<label data-n="${esc(a.nome.toLowerCase())}"><input type="checkbox" value="${a.id}"> ${esc(a.nome)}</label>`).join('')}</div>
-    <div class="btn-linha mt"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="ok">Matricular</button></div>`,
+/* escolher pessoas que já estão no cadastro (vale para turmas, atividades e eventos) */
+function escolherPessoas({ titulo, ajuda, ja, botao, aoConfirmar, aoCadastrarNova }) {
+  const todas = [...E.alunos].sort(ordenarNome);
+  if (!todas.length) { aviso('Ainda não há ninguém cadastrado.'); if (aoCadastrarNova) aoCadastrarNova(''); return; }
+  abrirModal(`<h2>${titulo}</h2><p class="ajuda">${ajuda}</p>
+    <input class="busca" id="busca" type="search" placeholder="Digite parte do nome" autocomplete="off">
+    <div class="checks pessoas" id="checks">${todas.map(a => ja.has(a.id)
+      ? `<label class="ja" data-n="${esc(normNome(a.nome))}"><input type="checkbox" checked disabled> <span><b>${esc(a.nome)}</b><small>já incluído(a)</small></span></label>`
+      : `<label data-n="${esc(normNome(a.nome))}"><input type="checkbox" value="${a.id}"> <span><b>${esc(a.nome)}</b><small>${esc(resumoPessoa(a))}</small></span></label>`).join('')}</div>
+    <p class="ajuda" id="nada" hidden>Ninguém com esse nome no cadastro.</p>
+    ${aoCadastrarNova ? `<button type="button" class="btn sec mt" id="nova">+ Não achei: cadastrar pessoa nova</button>` : ''}
+    <div class="btn-linha mt"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="ok">${botao}</button></div>`,
   m => {
-    m.querySelector('#busca').oninput = e => { const q = e.target.value.toLowerCase(); m.querySelectorAll('#checks label').forEach(l => l.hidden = !l.dataset.n.includes(q)); };
+    const busca = m.querySelector('#busca');
+    busca.oninput = () => {
+      const q = normNome(busca.value); let vis = 0;
+      m.querySelectorAll('#checks label').forEach(l => { l.hidden = !l.dataset.n.includes(q); if (!l.hidden) vis++; });
+      m.querySelector('#nada').hidden = vis > 0;
+    };
+    const nova = m.querySelector('#nova'); if (nova) nova.onclick = () => aoCadastrarNova(busca.value.trim());
     const ok = m.querySelector('#ok');
     ok.onclick = async () => {
       if (ok.disabled) return;
-      const ids = [...m.querySelectorAll('#checks input:checked')].map(i => i.value);
-      if (!ids.length) return aviso('Marque pelo menos um aluno.');
+      const ids = [...m.querySelectorAll('#checks input:checked:not(:disabled)')].map(i => i.value);
+      if (!ids.length) return aviso('Marque pelo menos uma pessoa.');
       ok.disabled = true;
-      const n = ids.filter(alunoId => matricular(turmaId, alunoId)).length;
-      await salvar(); fecharModal(); aviso(`${n} aluno(s) matriculado(s)`); render();
+      const n = await aoConfirmar(ids);
+      await salvar(); fecharModal(); aviso(`${n} pessoa(s) incluída(s)`); render();
     };
+  });
+}
+function escolherAlunos(turmaId) {
+  const t = turma(turmaId);
+  escolherPessoas({
+    titulo: 'Incluir aluno já cadastrado', ajuda: `${esc(curso(t?.cursoId)?.nome || '')} – ${esc(t?.nome || '')}. Marque uma ou mais pessoas. Quem já fez ou faz outras coisas na associação aparece aqui.`,
+    ja: new Set(E.matriculas.filter(m => m.turmaId === turmaId).map(m => m.alunoId)), botao: 'Incluir na turma',
+    aoConfirmar: ids => ids.filter(alunoId => matricular(turmaId, alunoId)).length,
+    aoCadastrarNova: nome => formAluno(null, turmaId, null, null, nome)
   });
 }
 
@@ -644,11 +680,12 @@ function caixaAtivs(alunoId, atividadeId) {
     <div class="checks atividades">${lista.map(a => `<label><input type="checkbox" name="ativ" value="${a.id}" ${atuais.has(a.id) ? 'checked' : ''}> <span><b>${esc(a.nome)}</b>${a.tipo ? ` <small>· ${esc(a.tipo)}</small>` : ''}</span></label>`).join('')}</div></div>`;
 }
 
-function formAluno(id, turmaId, cursoFoco, atividadeId) {
+function formAluno(id, turmaId, cursoFoco, atividadeId, nomeInicial) {
   const a = id ? aluno(id) : null;
   let confirmouHomonimo = false;
   abrirModal(`<h2>${a ? 'Editar aluno' : 'Novo aluno'}</h2><form id="f" novalidate>
-    ${campo('nome', 'Nome completo', a?.nome, 'text', 'autocomplete="off" autocapitalize="words"')}
+    ${campo('nome', 'Nome completo', a?.nome ?? nomeInicial ?? '', 'text', 'autocomplete="off" autocapitalize="words"')}
+    ${a ? '' : '<div id="sugNome" class="sug-nome" hidden></div>'}
     ${campo('telefone', 'Telefone', formatarFone(a?.telefone), 'tel', 'inputmode="numeric" placeholder="(41) 99999-9999"')}
     ${campo('endereco', 'Endereço', a?.endereco, 'text', 'placeholder="Rua e número"')}
     ${campo('bairro', 'Bairro', a?.bairro ?? 'Boqueirão', 'text')}
@@ -680,6 +717,17 @@ function formAluno(id, turmaId, cursoFoco, atividadeId) {
       const n = ajustarMatriculas(alvo.id, marcadas(), false);
       await salvar(); fecharModal(); aviso(n ? 'Cadastro existente usado e incluído' : 'Cadastro existente mantido'); render();
     };
+    const dadosForm = () => ({ nome: f.nome.value.trim().replace(/\s+/g, ' '), telefone: so(f.telefone.value), endereco: f.endereco.value.trim(), bairro: f.bairro.value.trim(), cpf: so(f.cpf.value) });
+    const sug = m.querySelector('#sugNome');
+    const sugerir = () => {
+      if (!sug) return;
+      const q = normNome(f.nome.value);
+      const achados = q.length < 3 ? [] : E.alunos.filter(x => normNome(x.nome).includes(q)).sort(ordenarNome).slice(0, 4);
+      sug.hidden = !achados.length;
+      sug.innerHTML = achados.length ? `<b>Já está no cadastro?</b> Toque para usar o cadastro existente e não duplicar:${achados.map(x => `<button type="button" class="item" data-usar="${x.id}"><div class="txt"><div class="n">${esc(x.nome)}</div><div class="d">${esc(resumoPessoa(x))}</div></div><span class="etiqueta">usar</span></button>`).join('')}` : '';
+      sug.querySelectorAll('[data-usar]').forEach(b => b.onclick = () => { b.disabled = true; usarExistente(aluno(b.dataset.usar), dadosForm()); });
+    };
+    if (sug) { f.nome.addEventListener('input', sugerir); sugerir(); }
     f.onsubmit = async ev => {
       ev.preventDefault(); limparErros(f);
       const d = { nome: f.nome.value.trim().replace(/\s+/g, ' '), telefone: so(f.telefone.value), endereco: f.endereco.value.trim(), bairro: f.bairro.value.trim(), cpf: so(f.cpf.value) };
@@ -715,6 +763,7 @@ async function juntarAlunos(manterId, outros) {
     ['telefone', 'endereco', 'bairro', 'cpf'].forEach(k => { if (!alvo[k] && o[k]) alvo[k] = o[k]; });
     E.matriculas.forEach(mt => { if (mt.alunoId === o.id) mt.alunoId = manterId; });
     E.participacoes.forEach(x => { if (x.alunoId === o.id) x.alunoId = manterId; });
+    E.eventos.forEach(x => { if (x.pessoas) x.pessoas = [...new Set(x.pessoas.map(p => p === o.id ? manterId : p))]; });
     E.encontros.forEach(x => { if (x.presentes) x.presentes = [...new Set(x.presentes.map(p => p === o.id ? manterId : p))]; });
     E.alunos = E.alunos.filter(x => x.id !== o.id);
   });
@@ -741,7 +790,7 @@ rota('alunos', () => {
 
 rota('aluno', id => {
   const a = aluno(id); if (!a) { ir('#/alunos'); return null; }
-  const ts = turmasDoAluno(id), avs = atividadesDoAluno(id);
+  const ts = turmasDoAluno(id), avs = atividadesDoAluno(id), evsA = eventosDoAluno(id);
   const iguais = E.alunos.filter(x => x.id !== id && normNome(x.nome) === normNome(a.nome));
   return {
     titulo: a.nome, subtitulo: 'Aluno', aba: 'cursos', voltar: '#/alunos',
@@ -755,6 +804,8 @@ rota('aluno', id => {
         : `<div class="vazio">Ainda não está em nenhuma turma.</div>`}
       ${E.atividades.length || avs.length ? `<p class="secao">Atividades (${avs.length})</p>
       ${avs.length ? `<ul class="lista">${avs.map(x => `<li><a class="item" href="#/atividade/${x.id}"><div class="txt"><div class="n">${esc(x.nome)}</div><div class="d">${esc(x.tipo || 'Atividade')}${x.horario ? ' · ' + esc(x.horario) : ''}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>` : `<div class="vazio">Não participa de nenhuma atividade.</div>`}` : ''}
+      ${evsA.length ? `<p class="secao">Eventos (${evsA.length})</p><ul class="lista">${evsA.map(x => `<li><a class="item" href="#/evento/${x.id}"><div class="txt"><div class="n">${esc(x.nome)}</div><div class="d">${dataBR(x.data)}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>` : ''}
+      ${!ts.some(t => situacaoTurma(t).txt !== 'Encerrada') && !avs.some(ativaAtiv) ? `<p class="ajuda" style="margin-top:10px">Sem curso ou atividade no momento. O cadastro continua ativo e pode ser incluído em qualquer turma, atividade ou evento.</p>` : ''}
       <div class="acoes"><button class="btn" id="atividades">Cursos e atividades: incluir ou retirar</button>
       <div class="btn-linha mt"><button class="btn sec" id="editar">Editar</button><button class="btn perigo" id="excluir">Excluir</button></div></div>`,
     depois: () => {
@@ -770,6 +821,7 @@ rota('aluno', id => {
         if (await confirmar('Excluir aluno?', `${a.nome} será apagado(a) e sairá de ${ts.length} turma(s)${avs.length ? ` e ${avs.length} atividade(s)` : ''}.`)) {
           E.alunos = E.alunos.filter(x => x.id !== id); E.matriculas = E.matriculas.filter(m => m.alunoId !== id);
           E.participacoes = E.participacoes.filter(x => x.alunoId !== id);
+          E.eventos.forEach(x => { if (x.pessoas) x.pessoas = x.pessoas.filter(p => p !== id); });
           E.encontros.forEach(x => { if (x.presentes) x.presentes = x.presentes.filter(p => p !== id); });
           await salvar(); aviso('Aluno excluído'); ir('#/alunos');
         }
@@ -858,7 +910,7 @@ rota('atividade', id => {
         : `<div class="vazio">Nenhum encontro registrado. A cada encontro, anote a data e quantas pessoas vieram.</div>`}
 
       <p class="secao">Participantes (${pes.length})</p>
-      <div class="btn-linha" style="margin-bottom:12px"><button class="btn" id="pessoaNova">+ Cadastrar pessoa aqui</button><button class="btn sec" id="pessoaExist">Já cadastrada</button></div>
+      <div class="btn-linha" style="margin-bottom:12px"><button class="btn" id="pessoaExist">Incluir já cadastrada</button><button class="btn sec" id="pessoaNova">+ Pessoa nova</button></div>
       ${pes.length ? `<ul class="lista">${pes.map(p => `<li><a class="item" href="#/aluno/${p.id}"><div class="txt"><div class="n">${esc(p.nome)}</div><div class="d">${esc(formatarFone(p.telefone) || 'sem telefone')}${p.bairro ? ' · ' + esc(p.bairro) : ''}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>`
         : `<div class="vazio">Ninguém na lista ainda. As pessoas são as mesmas do cadastro de alunos.</div>`}
       <div class="acoes"><div class="btn-linha"><button class="btn sec" id="editar">Editar atividade</button><button class="btn perigo" id="excluir">Excluir</button></div></div>`,
@@ -881,24 +933,25 @@ rota('atividade', id => {
 });
 
 function escolherParticipantes(atividadeId) {
-  const ja = new Set(E.participacoes.filter(x => x.atividadeId === atividadeId).map(x => x.alunoId));
-  const livres = E.alunos.filter(a => !ja.has(a.id)).sort(ordenarNome);
-  if (!livres.length) return aviso('Todas as pessoas cadastradas já estão nesta atividade.');
-  abrirModal(`<h2>Incluir participantes</h2><p class="ajuda">Marque quem participa desta atividade.</p>
-    <input class="busca" id="busca" type="search" placeholder="Buscar pelo nome" data-sem-foco="1">
-    <div class="checks" id="checks">${livres.map(a => `<label data-n="${esc(normNome(a.nome))}"><input type="checkbox" value="${a.id}"> ${esc(a.nome)}</label>`).join('')}</div>
-    <div class="btn-linha mt"><button class="btn sec" data-fechar>Cancelar</button><button class="btn" id="ok">Incluir</button></div>`,
-  m => {
-    m.querySelector('#busca').oninput = e => { const q = normNome(e.target.value); m.querySelectorAll('#checks label').forEach(l => l.hidden = !l.dataset.n.includes(q)); };
-    const ok = m.querySelector('#ok');
-    ok.onclick = async () => {
-      if (ok.disabled) return;
-      const ids = [...m.querySelectorAll('#checks input:checked')].map(i => i.value);
-      if (!ids.length) return aviso('Marque pelo menos uma pessoa.');
-      ok.disabled = true;
-      const n = ids.filter(alunoId => participar(atividadeId, alunoId)).length;
-      await salvar(); fecharModal(); aviso(`${n} participante(s) incluído(s)`); render();
-    };
+  escolherPessoas({
+    titulo: 'Incluir pessoa já cadastrada', ajuda: `${esc(atividade(atividadeId)?.nome || '')}. Marque uma ou mais pessoas.`,
+    ja: new Set(E.participacoes.filter(x => x.atividadeId === atividadeId).map(x => x.alunoId)), botao: 'Incluir na atividade',
+    aoConfirmar: ids => ids.filter(alunoId => participar(atividadeId, alunoId)).length,
+    aoCadastrarNova: nome => formAluno(null, null, null, atividadeId, nome)
+  });
+}
+function escolherPessoasEvento(eventoId) {
+  const e = evento(eventoId);
+  escolherPessoas({
+    titulo: 'Incluir pessoa já cadastrada', ajuda: `${esc(e?.nome || '')}. Marque quem participou.`,
+    ja: new Set(e?.pessoas || []), botao: 'Incluir no evento',
+    aoConfirmar: ids => {
+      const ev = evento(eventoId); ev.pessoas = ev.pessoas || [];
+      const novos = ids.filter(id => !ev.pessoas.includes(id)); ev.pessoas.push(...novos);
+      if (ev.modo !== 'lista') ev.quantidade = Math.max(Number(ev.quantidade) || 0, ev.pessoas.length);
+      else ev.quantidade = (ev.nomes || []).length + ev.pessoas.length;
+      return novos.length;
+    }
   });
 }
 
@@ -970,7 +1023,7 @@ rota('eventos', () => {
 
 function formEvento(id) {
   const e = id ? evento(id) : null;
-  let nomes = [...(e?.nomes || [])];
+  let nomes = [...(e?.nomes || [])], pessoas = [...(e?.pessoas || [])];
   abrirModal(`<h2>${e ? 'Editar evento' : 'Novo evento'}</h2><form id="f">
     ${campo('nome', 'Nome do evento', e?.nome, 'text', 'placeholder="Ex.: Outubro Rosa" autocomplete="off"')}
     <div class="duas">${campo('data', 'Data', e?.data ?? hoje(), 'date')}${campo('local', 'Local <small>(opcional)</small>', e?.local ?? 'Sede', 'text')}</div>
@@ -979,37 +1032,62 @@ function formEvento(id) {
       <label><input type="radio" name="modo" value="lista" ${e?.modo === 'lista' ? 'checked' : ''}><span>Lista de nomes</span></label></div></div>
     <div id="boxNumero">${campo('quantidade', 'Quantas pessoas participaram?', e?.modo !== 'lista' ? (e?.quantidade ?? '') : '', 'number', 'inputmode="numeric" min="0" step="1"')}</div>
     <div id="boxLista" hidden><div class="campo"><label for="novoNome">Participantes <small id="contaNomes"></small></label>
-      <div class="add-linha"><input id="novoNome" placeholder="Nome do participante" autocomplete="off"><button type="button" class="btn" id="addNome">Incluir</button></div>
+      <div class="add-linha"><input id="novoNome" placeholder="Digite o nome" autocomplete="off"><button type="button" class="btn" id="addNome">Incluir</button></div>
+      <div id="sugEv" class="sug-nome" hidden></div>
+      <p class="ajuda" style="margin:6px 0 0">Quem já está no cadastro aparece enquanto você digita: toque no nome para ligar ao cadastro.</p>
       <ul class="nomes" id="nomes"></ul></div></div>
     <div class="campo"><label for="obs">Observação <small>(opcional)</small></label><textarea id="obs" name="obs" placeholder="Ex.: parceria com o SENAI">${esc(e?.obs)}</textarea></div>
     <div class="btn-linha"><button type="button" class="btn sec" data-fechar>Cancelar</button><button class="btn">Salvar</button></div></form>`,
   m => {
     const f = m.querySelector('#f');
     const desenhar = () => {
-      m.querySelector('#nomes').innerHTML = nomes.map((n, i) => `<li><span>${i + 1}. ${esc(n)}</span><button type="button" data-i="${i}">remover</button></li>`).join('');
-      m.querySelector('#contaNomes').textContent = `(${nomes.length})`;
-      m.querySelectorAll('#nomes button').forEach(b => b.onclick = () => { nomes.splice(Number(b.dataset.i), 1); desenhar(); });
+      const linhas = [...pessoas.map((pid, i) => `<li><span>${esc(aluno(pid)?.nome || 'Pessoa excluída')} <span class="etiqueta">cadastrada</span></span><button type="button" data-p="${i}">remover</button></li>`),
+        ...nomes.map((n, i) => `<li><span>${esc(n)}</span><button type="button" data-i="${i}">remover</button></li>`)];
+      m.querySelector('#nomes').innerHTML = linhas.join('');
+      m.querySelector('#contaNomes').textContent = `(${nomes.length + pessoas.length})`;
+      m.querySelectorAll('#nomes [data-i]').forEach(b => b.onclick = () => { nomes.splice(Number(b.dataset.i), 1); desenhar(); });
+      m.querySelectorAll('#nomes [data-p]').forEach(b => b.onclick = () => { pessoas.splice(Number(b.dataset.p), 1); desenhar(); });
     };
+    const sugEv = m.querySelector('#sugEv');
+    const ligar = pid => { if (!pessoas.includes(pid)) pessoas.push(pid); const n = m.querySelector('#novoNome'); n.value = ''; sugEv.hidden = true; desenhar(); n.focus(); };
+    m.querySelector('#novoNome').addEventListener('input', ev => {
+      const q = normNome(ev.target.value);
+      const achados = q.length < 2 ? [] : E.alunos.filter(x => !pessoas.includes(x.id) && normNome(x.nome).includes(q)).sort(ordenarNome).slice(0, 5);
+      sugEv.hidden = !achados.length;
+      sugEv.innerHTML = achados.map(x => `<button type="button" class="item" data-lig="${x.id}"><div class="txt"><div class="n">${esc(x.nome)}</div><div class="d">${esc(resumoPessoa(x))}</div></div><span class="etiqueta">incluir</span></button>`).join('');
+      sugEv.querySelectorAll('[data-lig]').forEach(b => b.onclick = () => ligar(b.dataset.lig));
+    });
     const trocar = () => { const lista = f.modo.value === 'lista'; m.querySelector('#boxLista').hidden = !lista; m.querySelector('#boxNumero').hidden = lista; };
     f.querySelectorAll('[name=modo]').forEach(r => r.onchange = trocar);
-    const incluir = () => { const n = m.querySelector('#novoNome'); const v = n.value.trim(); if (v) { nomes.push(v); n.value = ''; desenhar(); } n.focus(); };
+    const incluir = () => {
+      const n = m.querySelector('#novoNome'); const v = n.value.trim().replace(/\s+/g, ' ');
+      if (v) {
+        const cad = E.alunos.find(x => normNome(x.nome) === normNome(v));
+        if (cad) { ligar(cad.id); return; }                       // mesmo nome do cadastro: liga, não duplica
+        if (!nomes.some(x => normNome(x) === normNome(v))) nomes.push(v);
+        n.value = ''; sugEv.hidden = true; desenhar();
+      }
+      n.focus();
+    };
     m.querySelector('#addNome').onclick = incluir;
     m.querySelector('#novoNome').onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); incluir(); } };
     trocar(); desenhar();
     f.onsubmit = async ev => {
       ev.preventDefault(); limparErros(f);
-      const pend = m.querySelector('#novoNome').value.trim(); if (pend && f.modo.value === 'lista') { nomes.push(pend); }
+      const pend = m.querySelector('#novoNome').value.trim(); if (pend && f.modo.value === 'lista') incluir();
       const d = { nome: f.nome.value.trim(), data: f.data.value, local: f.local.value.trim(), modo: f.modo.value, obs: f.obs.value.trim() };
       if (!d.nome) return erroCampo(f, 'nome', 'Digite o nome do evento.');
       if (!d.data) return erroCampo(f, 'data', 'Informe a data.');
       if (d.modo === 'numero') {
         const q = f.quantidade.value === '' ? 0 : Number(f.quantidade.value);
         if (!Number.isInteger(q) || q < 0) return erroCampo(f, 'quantidade', 'Use um número inteiro, como 180.');
-        d.quantidade = q; d.nomes = [];
-      } else { d.nomes = nomes; d.quantidade = nomes.length; }
-      if (e) Object.assign(evento(id) || e, d); else E.eventos.push({ id: uid(), ...d });
+        d.quantidade = q; d.nomes = []; d.pessoas = pessoas;
+      } else { d.nomes = nomes; d.pessoas = pessoas; d.quantidade = nomes.length + pessoas.length; }
+      let novoId = null;
+      if (e) Object.assign(evento(id) || e, d); else { novoId = uid(); E.eventos.push({ id: novoId, ...d }); }
       anoEventos = anoDe(d.data);
-      await salvar(); fecharModal(); aviso(e ? 'Evento atualizado' : 'Evento registrado'); render();
+      await salvar(); fecharModal(); aviso(e ? 'Evento atualizado' : 'Evento registrado');
+      if (novoId) ir('#/evento/' + novoId); else render();
     };
   });
 }
@@ -1025,13 +1103,17 @@ rota('evento', id => {
       <div class="card mt"><dl class="info"><dt>Data</dt><dd>${dataBR(e.data)}</dd><dt>Local</dt><dd>${esc(e.local || '—')}</dd>
       <dt>Registro</dt><dd>${e.modo === 'lista' ? 'Lista de nomes' : 'Só o número'}</dd>${gasto ? `<dt>Gastos</dt><dd>${reais(gasto)}</dd>` : ''}
       ${e.obs ? `<dt>Obs.</dt><dd>${esc(e.obs)}</dd>` : ''}</dl></div>
-      ${e.modo === 'lista' && e.nomes?.length ? `<p class="secao">Participantes</p><div class="card"><ol style="padding-left:20px">${e.nomes.map(n => `<li>${esc(n)}</li>`).join('')}</ol></div>` : ''}
+      <p class="secao">Pessoas do cadastro que participaram (${(e.pessoas || []).length})</p>
+      <button class="btn" id="incluirCad" style="margin-bottom:12px">Incluir pessoa já cadastrada</button>
+      ${(e.pessoas || []).length ? `<ul class="lista">${e.pessoas.map(aluno).filter(Boolean).sort(ordenarNome).map(p => `<li><a class="item" href="#/aluno/${p.id}"><div class="txt"><div class="n">${esc(p.nome)}</div><div class="d">${esc(resumoPessoa(p))}</div></div><span class="seta">›</span></a></li>`).join('')}</ul>` : ''}
+      ${e.modo === 'lista' && e.nomes?.length ? `<p class="secao">Outros participantes (sem cadastro)</p><div class="card"><ol style="padding-left:20px">${e.nomes.map(n => `<li>${esc(n)}</li>`).join('')}</ol></div>` : ''}
       ${lig.length ? `<p class="secao">Lançamentos do caixa ligados</p><ul class="lista">${lig.map(itemLanc).join('')}</ul>` : ''}
       <div class="acoes"><button class="btn" id="entrada">+ Lançar valor arrecadado</button>
       <div class="btn-linha mt"><button class="btn sec" id="editar">Editar</button><button class="btn perigo" id="excluir">Excluir</button></div></div>`,
     depois: r => {
       ligarLancs(r);
       $('#entrada').onclick = () => formLancamento(null, 'entrada', id);
+      $('#incluirCad').onclick = () => escolherPessoasEvento(id);
       $('#editar').onclick = () => formEvento(id);
       $('#excluir').onclick = async () => {
         if (await confirmar('Excluir evento?', `"${e.nome}" será apagado. ${lig.length ? 'Os lançamentos do caixa continuam, mas sem o vínculo.' : ''}`)) {
@@ -1165,17 +1247,24 @@ function dadosRel() {
     return { ativ: a, nome: a.nome, encontros: ea, presencas: presencas(ea), pessoas: pessoasDaAtividade(a.id) };
   }).filter(x => x.encontros.length || ativaAtiv(x.ativ)).sort((a, b) => b.presencas - a.presencas || a.nome.localeCompare(b.nome, 'pt-BR'));
   const pessoasAtiv = new Set(porAtiv.flatMap(x => x.pessoas.map(p => p.id))).size, presAtiv = presencas(encs);
-  return { ts, porCurso, alunosUnicos, evs, part, ls, ent, sai, bazar, totBazar, diasBazar, encs, porAtiv, pessoasAtiv, presAtiv };
+  // pessoas diferentes atendidas no período: cada cadastro conta UMA vez, mesmo em vários cursos, atividades e eventos
+  const ids = new Set([
+    ...E.matriculas.filter(m => ts.some(t => t.id === m.turmaId)).map(m => m.alunoId),
+    ...porAtiv.flatMap(x => x.pessoas.map(p => p.id)),
+    ...evs.flatMap(e => e.pessoas || [])
+  ].filter(id => aluno(id)));
+  const pessoasUnicas = ids.size;
+  return { ts, porCurso, alunosUnicos, evs, part, ls, ent, sai, bazar, totBazar, diasBazar, encs, porAtiv, pessoasAtiv, presAtiv, pessoasUnicas };
 }
 function resumoRel(d) {
   const b = (v, l, c = '') => `<div class="bloco ${c}"><div class="v" style="font-size:${String(v).length > 7 ? 18 : 24}px">${v}</div><div class="l">${l}</div></div>`;
   switch (Rel.tipo) {
-    case 'cursos': return b(d.porCurso.length, 'cursos') + b(d.ts.length, 'turmas') + b(d.alunosUnicos, 'alunos atendidos', 'gold');
-    case 'atividades': return b(d.porAtiv.length, 'atividades') + b(d.pessoasAtiv, 'participantes', 'gold') + b(d.encs.length, 'encontros', 'coral') + b(d.presAtiv, 'presenças');
+    case 'cursos': return b(d.porCurso.length, 'cursos') + b(d.ts.length, 'turmas') + b(d.alunosUnicos, 'alunos diferentes', 'gold');
+    case 'atividades': return b(d.porAtiv.length, 'atividades') + b(d.pessoasAtiv, 'participantes diferentes', 'gold') + b(d.encs.length, 'encontros', 'coral') + b(d.presAtiv, 'presenças');
     case 'eventos': return b(d.evs.length, 'eventos', 'coral') + b(d.part, 'participações') + b(reais(d.ls.filter(l => l.tipo === 'entrada' && l.eventoId).reduce((s, l) => s + l.valor, 0)), 'arrecadado em eventos', 'gold');
     case 'caixa': return b(reais(d.ent), 'entradas') + b(reais(d.sai), 'saídas', 'coral') + b(reais(d.ent - d.sai), 'saldo', 'gold') + b(d.ls.length, 'lançamentos');
     case 'bazar': return b(reais(d.totBazar), 'arrecadado no bazar', 'gold') + b(d.diasBazar, 'dias de bazar') + b(reais(d.diasBazar ? d.totBazar / d.diasBazar : 0), 'média por dia');
-    default: return b(d.porCurso.length, 'cursos') + b(d.alunosUnicos, 'alunos atendidos', 'gold') + b(d.porAtiv.length, 'atividades') + b(d.presAtiv, 'presenças em atividades', 'gold') + b(d.evs.length, 'eventos', 'coral') + b(d.part, 'participações em eventos') + b(reais(d.ent - d.sai), 'saldo do caixa');
+    default: return `<div class="bloco largo gold"><div class="v">${d.pessoasUnicas}</div><div class="l">pessoas diferentes atendidas (cada uma contada uma vez)</div></div>` + b(d.porCurso.length, 'cursos') + b(d.alunosUnicos, 'alunos em cursos', 'gold') + b(d.porAtiv.length, 'atividades') + b(d.presAtiv, 'presenças em atividades', 'gold') + b(d.evs.length, 'eventos', 'coral') + b(d.part, 'participações em eventos') + b(reais(d.ent - d.sai), 'saldo do caixa');
   }
 }
 
@@ -1250,7 +1339,8 @@ function pdfBlocos(p, itens) {
     const x = 15 + i * (w + 4);
     d.setFillColor(...(it.cor || COR.soft)); d.roundedRect(x, p.y, w, 22, 3, 3, 'F');
     d.setFont('helvetica', 'bold'); d.setFontSize(16); d.setTextColor(...COR.teal); d.text(String(it.v), x + 4, p.y + 10);
-    d.setFont('helvetica', 'normal'); d.setFontSize(8.5); d.setTextColor(...COR.muted); d.text(it.l, x + 4, p.y + 17);
+    d.setFont('helvetica', 'normal'); d.setFontSize(8); d.setTextColor(...COR.muted);
+    d.splitTextToSize(it.l, w - 6).slice(0, 2).forEach((linha, k) => d.text(linha, x + 4, p.y + 15.5 + k * 3.6));
   });
   d.setTextColor(...COR.ink); p.y += 30;
 }
@@ -1337,7 +1427,9 @@ function gerarPDF() {
 
   if (tipo.id === 'geral') {
     pdfSecao(p, 'Resumo');
-    pdfBlocos(p, [{ v: d.porCurso.length, l: 'cursos' }, { v: d.ts.length, l: 'turmas' }, { v: d.alunosUnicos, l: 'alunos atendidos', cor: [253, 241, 214] }, { v: d.evs.length, l: 'eventos', cor: [253, 230, 224] }, { v: d.part, l: 'participações' }]);
+    pdfBlocos(p, [{ v: d.pessoasUnicas, l: 'pessoas diferentes atendidas', cor: [253, 241, 214] }, { v: d.porCurso.length, l: 'cursos' }, { v: d.alunosUnicos, l: 'alunos em cursos' }, { v: d.evs.length, l: 'eventos', cor: [253, 230, 224] }, { v: d.part, l: 'participações em eventos' }]);
+    p.doc.setFontSize(8.5); p.doc.setTextColor(...COR.muted);
+    p.doc.text('Pessoas diferentes atendidas: cada cadastro conta uma vez, mesmo participando de vários cursos, atividades e eventos.', 15, p.y - 4); p.doc.setTextColor(...COR.ink); p.y += 4;
     if (d.porAtiv.length) pdfBlocos(p, [{ v: d.porAtiv.length, l: 'atividades' }, { v: d.pessoasAtiv, l: 'participantes em atividades', cor: [253, 241, 214] }, { v: d.encs.length, l: 'encontros', cor: [253, 230, 224] }, { v: d.presAtiv, l: 'presenças em atividades' }]);
     secCursos(false);
     if (d.porAtiv.length) secAtividades(false);
@@ -1346,7 +1438,9 @@ function gerarPDF() {
     pdfTabela(p, ['Item', 'Valor'], [['Total de entradas', reais(d.ent)], ['Total de saídas', reais(d.sai)], ['Saldo do período', reais(d.ent - d.sai)], ['Arrecadado no bazar', reais(d.totBazar)]], [130, 50], ['', 'r']);
   } else if (tipo.id === 'cursos') {
     pdfSecao(p, 'Resumo');
-    pdfBlocos(p, [{ v: d.porCurso.length, l: 'cursos' }, { v: d.ts.length, l: 'turmas' }, { v: d.alunosUnicos, l: 'alunos atendidos', cor: [253, 241, 214] }]);
+    pdfBlocos(p, [{ v: d.porCurso.length, l: 'cursos' }, { v: d.ts.length, l: 'turmas' }, { v: d.alunosUnicos, l: 'alunos diferentes', cor: [253, 241, 214] }]);
+    p.doc.setFontSize(8.5); p.doc.setTextColor(...COR.muted);
+    p.doc.text('Alunos diferentes: quem faz mais de um curso conta uma vez. Na tabela, cada curso mostra os seus alunos.', 15, p.y - 4); p.doc.setTextColor(...COR.ink); p.y += 4;
     secCursos(true);
   } else if (tipo.id === 'atividades') {
     pdfSecao(p, 'Resumo');
